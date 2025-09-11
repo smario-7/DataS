@@ -12,3 +12,4 @@ plotly
 psycopg2-binary
 openai
 scikit-learn
+reportlab

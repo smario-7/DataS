@@ -7,8 +7,8 @@ from pathlib import Path
 from packages.schema_utils import infer_schema, schema_to_frame
 from packages.target_utils import choose_target, TargetDecision
 
-FOLDER = Path(__file__).resolve()
-PATH = FOLDER.parent.parent / "hackaton-09-08" / "data" / "avocado.csv"
+FOLDER = Path(__file__).resolve().parent.parent
+PATH = FOLDER / "data" / "avocado.csv"
 
 #####################
 ### ALL FUNCTIONS ###
@@ -31,8 +31,8 @@ def display_target_selection_with_spinner(df, schema, user_choice, strategy_labe
     
     # WAŻNE: Wywołaj choose_target z odpowiednimi parametrami w zależności od strategii
     if strategy_label == "auto_ai":
-        # Sprawdź czy klucz API jest dostępny
-        if not openai_api_key:
+        # Sprawdź czy klucz API jest dostępny (usuń spacje)
+        if not openai_api_key or not openai_api_key.strip():
             st.warning("⚠️ Brak klucza API OpenAI - przełączam na heurystykę")
             decision: TargetDecision = choose_target(
                 df=df,

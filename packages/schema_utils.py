@@ -1,6 +1,8 @@
 from dataclasses import dataclass, asdict
-from typing import Optional, Dict, Any, Literal
+from typing import Optional, Dict, Any, Literal, List
 import pandas as pd
+import json
+import random
 
 import numpy as np
 from pandas.api.types import (
@@ -287,3 +289,600 @@ def schema_asdict(schema: Schema) -> dict:
         "primary_key_candidates": schema.primary_key_candidates,
         "notes": list(schema.notes),
     }
+
+
+@dataclass
+class BusinessContextAnalysis:
+    """Wynik analizy kontekstu biznesowego danych"""
+    domain: str
+    business_purpose: str
+    data_description: str
+    key_insights: List[str]
+
+
+@dataclass
+class ColumnRelationships:
+    """Wynik analizy relacji między kolumnami"""
+    relationships: List[Dict[str, Any]]
+    correlation_matrix: Dict[str, Dict[str, float]]
+    suggested_groupings: List[List[str]]
+
+
+@dataclass
+class DataCleaningSuggestions:
+    """Sugestie do czyszczenia danych"""
+    missing_data_strategy: Dict[str, str]
+    outlier_treatment: Dict[str, str]
+    data_type_conversions: List[Dict[str, str]]
+    quality_issues: List[str]
+
+
+def determine_business_domain(df: pd.DataFrame, schema: Schema, api_key: str) -> Optional[str]:
+    """
+    Krok 1: Określa domenę biznesową danych za pomocą LLM.
+    
+    Args:
+        df: DataFrame z danymi
+        schema: Schemat danych
+        api_key: Klucz API OpenAI
+    
+    Returns:
+        Nazwa domeny biznesowej lub None w przypadku błędu
+    """
+    try:
+        from config.llm_client import get_openai_client, MODEL
+        
+        client = get_openai_client(api_key)
+        if not client:
+            return None
+            
+        # Przygotuj przykładowe dane z kolumn tekstowych
+        text_columns = [col for col, info in schema.columns.items() 
+                       if info.semantic_type in ["text", "categorical"] and info.n_unique > 1]
+        
+        sample_data = {}
+        for col in text_columns[:5]:  # Maksymalnie 5 kolumn tekstowych
+            non_null_values = df[col].dropna()
+            if len(non_null_values) > 0:
+                # Pobierz 5 losowych wartości
+                sample_size = min(5, len(non_null_values))
+                sample_values = random.sample(list(non_null_values), sample_size)
+                sample_data[col] = sample_values
+        
+        # Przygotuj prompt
+        columns_info = []
+        for col, info in schema.columns.items():
+            columns_info.append(f"- {col}: {info.semantic_type} ({info.n_unique} unikalnych wartości, {info.missing_ratio:.1%} braków)")
+        
+        prompt = f"""
+Jako ekspert analizy danych, przeanalizuj poniższy zbiór danych i określ JEDYNIE domenę biznesową.
+
+**Informacje o kolumnach:**
+{chr(10).join(columns_info)}
+
+**Przykładowe dane z kolumn tekstowych:**
+{json.dumps(sample_data, ensure_ascii=False, indent=2)}
+
+**Zadanie:** Określ w jakiej branży/obszarze działalności mogą być te dane.
+
+**Odpowiedz TYLKO nazwą domeny biznesowej w jednym zdaniu, np.:**
+"Handel detaliczny - sprzedaż produktów spożywczych"
+"Finanse - analiza kredytowa klientów"
+"E-commerce - dane o transakcjach online"
+"""
+        
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+        
+        return response.choices[0].message.content.strip()
+        
+    except Exception as e:
+        print(f"❌ [Business Domain] Błąd: {e}")
+        return None
+
+
+def llm_guess_target_with_domain(df: pd.DataFrame, schema: Schema, business_domain: str, api_key: str) -> Optional[str]:
+    """
+    Krok 2: Wybiera kolumnę docelową używając wcześniej określonej domeny biznesowej.
+    
+    Args:
+        df: DataFrame z danymi
+        schema: Schemat danych
+        business_domain: Wcześniej określona domena biznesowa
+        api_key: Klucz API OpenAI
+    
+    Returns:
+        Nazwa kolumny docelowej lub None w przypadku błędu
+    """
+    try:
+        from config.llm_client import get_openai_client, MODEL
+        
+        client = get_openai_client(api_key)
+        if not client:
+            return None
+            
+        # Przygotuj informacje o kolumnach
+        columns_info = []
+        for col, info in schema.columns.items():
+            columns_info.append(f"- {col}: {info.semantic_type} ({info.n_unique} unikalnych wartości)")
+        
+        prompt = f"""
+Jako ekspert analizy danych, wybierz najlepszą kolumnę docelową dla modelu ML.
+
+**Domena biznesowa:** {business_domain}
+
+**Kolumny w zbiorze danych:**
+{chr(10).join(columns_info)}
+
+**Zadanie:** Wybierz kolumnę, która będzie najlepszym targetem dla modelu ML w kontekście tej domeny biznesowej.
+
+**Odpowiedz TYLKO nazwą kolumny, np.:**
+"price"
+"survived"
+"Total Volume"
+"""
+        
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+        
+        target = response.choices[0].message.content.strip()
+        
+        # Usuń cudzysłowy jeśli są
+        if target.startswith('"') and target.endswith('"'):
+            target = target[1:-1]
+        
+        # Sprawdź czy kolumna istnieje
+        print(f"🔍 [LLM Target] LLM wybrał kolumnę: '{target}'")
+        print(f"🔍 [LLM Target] Dostępne kolumny: {list(df.columns)}")
+        if target in df.columns:
+            return target
+        else:
+            print(f"⚠️ [LLM Target] LLM wybrał nieistniejącą kolumnę: {target}")
+            return None
+        
+    except Exception as e:
+        print(f"❌ [LLM Target] Błąd: {e}")
+        return None
+
+
+def analyze_column_correlations_by_names(df: pd.DataFrame, schema: Schema, business_domain: str, target_column: str, api_key: str) -> Optional[Dict[str, Any]]:
+    """
+    Krok 3: Analizuje korelacje między kolumnami na podstawie nazw.
+    
+    Args:
+        df: DataFrame z danymi
+        schema: Schemat danych
+        business_domain: Domena biznesowa
+        target_column: Wybrana kolumna docelowa
+        api_key: Klucz API OpenAI
+    
+    Returns:
+        Słownik z analizą korelacji lub None w przypadku błędu
+    """
+    try:
+        from config.llm_client import get_openai_client, MODEL
+        
+        client = get_openai_client(api_key)
+        if not client:
+            return None
+            
+        # Przygotuj informacje o kolumnach
+        columns_info = []
+        for col, info in schema.columns.items():
+            columns_info.append(f"- {col}: {info.semantic_type} ({info.n_unique} unikalnych wartości)")
+        
+        prompt = f"""
+Jako ekspert analizy danych, przeanalizuj korelacje między kolumnami na podstawie ich nazw.
+
+**Domena biznesowa:** {business_domain}
+**Kolumna docelowa:** {target_column}
+
+**Kolumny w zbiorze danych:**
+{chr(10).join(columns_info)}
+
+**Zadanie:** Przeanalizuj i określ prawdopodobne korelacje między kolumnami na podstawie ich nazw i kontekstu biznesowego.
+
+**Odpowiedz w formacie JSON:**
+{{
+    "correlations": [
+        {{
+            "column1": "nazwa_kolumny_1",
+            "column2": "nazwa_kolumny_2",
+            "correlation_strength": "wysoka/średnia/niska",
+            "correlation_type": "dodatnia/ujemna",
+            "business_reason": "uzasadnienie biznesowe"
+        }}
+    ],
+    "target_correlations": [
+        {{
+            "column": "nazwa_kolumny",
+            "expected_impact": "wysoki/średni/niski",
+            "relationship": "opis relacji z targetem"
+        }}
+    ]
+}}
+"""
+        
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+        
+        content = response.choices[0].message.content
+        
+        # Spróbuj wyciągnąć JSON z odpowiedzi
+        try:
+            result = json.loads(content)
+            return result
+        except json.JSONDecodeError:
+            # Jeśli nie jest to czysty JSON, spróbuj wyciągnąć JSON z tekstu
+            import re
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                json_str = json_match.group()
+                result = json.loads(json_str)
+                return result
+            else:
+                print(f"❌ [Column Correlations] Nie można wyciągnąć JSON z odpowiedzi: {content}")
+                return {"error": "Nie można sparsować odpowiedzi LLM jako JSON"}
+        
+    except Exception as e:
+        print(f"❌ [Column Correlations] Błąd: {e}")
+        return None
+
+
+def generate_data_cleaning_suggestions_step(df: pd.DataFrame, schema: Schema, business_domain: str, target_column: str, api_key: str) -> Optional[Dict[str, Any]]:
+    """
+    Krok 4: Generuje sugestie do naprawy danych.
+    
+    Args:
+        df: DataFrame z danymi
+        schema: Schemat danych
+        business_domain: Domena biznesowa
+        target_column: Wybrana kolumna docelowa
+        api_key: Klucz API OpenAI
+    
+    Returns:
+        Słownik z sugestiami lub None w przypadku błędu
+    """
+    try:
+        from config.llm_client import get_openai_client, MODEL
+        
+        client = get_openai_client(api_key)
+        if not client:
+            return None
+            
+        # Przygotuj szczegółowe informacje o kolumnach
+        columns_details = []
+        for col, info in schema.columns.items():
+            details = {
+                "name": col,
+                "semantic_type": info.semantic_type,
+                "missing_ratio": info.missing_ratio,
+                "n_unique": info.n_unique,
+                "is_constant": info.is_constant,
+                "example_value": str(info.example_non_null) if info.example_non_null else None
+            }
+            columns_details.append(details)
+        
+        prompt = f"""
+Jako ekspert data science, przeanalizuj poniższy schemat danych i wygeneruj sugestie do naprawy danych.
+
+**Domena biznesowa:** {business_domain}
+**Kolumna docelowa:** {target_column}
+
+**Szczegółowe informacje o kolumnach:**
+{json.dumps(columns_details, ensure_ascii=False, indent=2)}
+
+**Zauważone problemy:**
+{chr(10).join(f"- {note}" for note in schema.notes)}
+
+**Zadanie:** Wygeneruj sugestie do naprawy danych w kontekście domeny biznesowej i wybranej kolumny docelowej.
+
+**Odpowiedz w formacie JSON:**
+{{
+    "missing_data_strategy": {{
+        "kolumna1": "strategia obsługi braków",
+        "kolumna2": "strategia obsługi braków"
+    }},
+    "outlier_treatment": {{
+        "kolumna1": "strategia obsługi outliers",
+        "kolumna2": "strategia obsługi outliers"
+    }},
+    "data_type_conversions": [
+        {{"column": "kolumna1", "from": "obecny_typ", "to": "docelowy_typ", "reason": "uzasadnienie"}}
+    ],
+    "quality_issues": [
+        "problem 1",
+        "problem 2"
+    ],
+    "target_specific_suggestions": [
+        "sugestia specyficzna dla targetu 1",
+        "sugestia specyficzna dla targetu 2"
+    ]
+}}
+"""
+        
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+        
+        content = response.choices[0].message.content
+        
+        # Spróbuj wyciągnąć JSON z odpowiedzi
+        try:
+            result = json.loads(content)
+            return result
+        except json.JSONDecodeError:
+            # Jeśli nie jest to czysty JSON, spróbuj wyciągnąć JSON z tekstu
+            import re
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                json_str = json_match.group()
+                result = json.loads(json_str)
+                return result
+            else:
+                print(f"❌ [Data Cleaning] Nie można wyciągnąć JSON z odpowiedzi: {content}")
+                return {"error": "Nie można sparsować odpowiedzi LLM jako JSON"}
+        
+    except Exception as e:
+        print(f"❌ [Data Cleaning] Błąd: {e}")
+        return None
+
+
+def analyze_business_context(df: pd.DataFrame, schema: Schema, api_key: str) -> Optional[BusinessContextAnalysis]:
+    """
+    Analizuje kontekst biznesowy danych za pomocą LLM.
+    
+    Args:
+        df: DataFrame z danymi
+        schema: Schemat danych
+        api_key: Klucz API OpenAI
+    
+    Returns:
+        BusinessContextAnalysis lub None w przypadku błędu
+    """
+    try:
+        from config.llm_client import get_openai_client, MODEL
+        
+        client = get_openai_client(api_key)
+        if not client:
+            return None
+            
+        # Przygotuj przykładowe dane z kolumn tekstowych
+        text_columns = [col for col, info in schema.columns.items() 
+                       if info.semantic_type in ["text", "categorical"] and info.n_unique > 1]
+        
+        sample_data = {}
+        for col in text_columns[:5]:  # Maksymalnie 5 kolumn tekstowych
+            non_null_values = df[col].dropna()
+            if len(non_null_values) > 0:
+                # Pobierz 5 losowych wartości
+                sample_size = min(5, len(non_null_values))
+                sample_values = random.sample(list(non_null_values), sample_size)
+                sample_data[col] = sample_values
+        
+        # Przygotuj prompt
+        columns_info = []
+        for col, info in schema.columns.items():
+            columns_info.append(f"- {col}: {info.semantic_type} ({info.n_unique} unikalnych wartości, {info.missing_ratio:.1%} braków)")
+        
+        prompt = f"""
+Jako ekspert analizy danych, przeanalizuj poniższy zbiór danych i określ:
+
+1. **Domenę biznesową** - w jakiej branży/obszarze działalności mogą być te dane?
+2. **Cel biznesowy** - do czego mogą służyć te dane?
+3. **Opis danych** - co reprezentują te dane w kontekście biznesowym?
+4. **Kluczowe spostrzeżenia** - jakie ważne informacje można wyciągnąć z nazw kolumn i przykładowych danych?
+
+**Informacje o kolumnach:**
+{chr(10).join(columns_info)}
+
+**Przykładowe dane z kolumn tekstowych:**
+{json.dumps(sample_data, ensure_ascii=False, indent=2)}
+
+**Odpowiedz w formacie JSON:**
+{{
+    "domain": "nazwa domeny biznesowej",
+    "business_purpose": "cel biznesowy danych",
+    "data_description": "opis co reprezentują dane",
+    "key_insights": ["spostrzeżenie 1", "spostrzeżenie 2", "spostrzeżenie 3"]
+}}
+"""
+        
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+        
+        result = json.loads(response.choices[0].message.content)
+        return BusinessContextAnalysis(
+            domain=result["domain"],
+            business_purpose=result["business_purpose"],
+            data_description=result["data_description"],
+            key_insights=result["key_insights"]
+        )
+        
+    except Exception as e:
+        print(f"❌ [Business Context] Błąd: {e}")
+        return None
+
+
+def analyze_column_relationships(df: pd.DataFrame, schema: Schema, business_context: BusinessContextAnalysis, api_key: str) -> Optional[ColumnRelationships]:
+    """
+    Analizuje relacje między kolumnami na podstawie nazw i kontekstu biznesowego.
+    
+    Args:
+        df: DataFrame z danymi
+        schema: Schemat danych
+        business_context: Kontekst biznesowy danych
+        api_key: Klucz API OpenAI
+    
+    Returns:
+        ColumnRelationships lub None w przypadku błędu
+    """
+    try:
+        from config.llm_client import get_openai_client, MODEL
+        
+        client = get_openai_client(api_key)
+        if not client:
+            return None
+            
+        # Przygotuj informacje o kolumnach
+        columns_info = []
+        for col, info in schema.columns.items():
+            columns_info.append(f"- {col}: {info.semantic_type} ({info.n_unique} unikalnych wartości)")
+        
+        prompt = f"""
+Jako ekspert analizy danych, przeanalizuj relacje między kolumnami w kontekście domeny biznesowej.
+
+**Kontekst biznesowy:**
+- Domena: {business_context.domain}
+- Cel: {business_context.business_purpose}
+- Opis: {business_context.data_description}
+
+**Kolumny w zbiorze danych:**
+{chr(10).join(columns_info)}
+
+Przeanalizuj i określ:
+
+1. **Relacje między kolumnami** - które kolumny mogą być powiązane logicznie?
+2. **Macierz korelacji na podstawie nazw** - jakie są prawdopodobne korelacje między kolumnami?
+3. **Sugerowane grupowania** - które kolumny można pogrupować tematycznie?
+
+**Odpowiedz w formacie JSON:**
+{{
+    "relationships": [
+        {{
+            "column1": "nazwa_kolumny_1",
+            "column2": "nazwa_kolumny_2", 
+            "relationship_type": "typ_relacji",
+            "description": "opis relacji"
+        }}
+    ],
+    "correlation_matrix": {{
+        "kolumna1": {{"kolumna2": 0.8, "kolumna3": 0.3}},
+        "kolumna2": {{"kolumna1": 0.8, "kolumna3": 0.5}}
+    }},
+    "suggested_groupings": [
+        ["kolumna1", "kolumna2"],
+        ["kolumna3", "kolumna4", "kolumna5"]
+    ]
+}}
+"""
+        
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+        
+        result = json.loads(response.choices[0].message.content)
+        return ColumnRelationships(
+            relationships=result["relationships"],
+            correlation_matrix=result["correlation_matrix"],
+            suggested_groupings=result["suggested_groupings"]
+        )
+        
+    except Exception as e:
+        print(f"❌ [Column Relationships] Błąd: {e}")
+        return None
+
+
+def generate_data_cleaning_suggestions(df: pd.DataFrame, schema: Schema, api_key: str) -> Optional[DataCleaningSuggestions]:
+    """
+    Generuje sugestie do czyszczenia danych na podstawie schematu.
+    
+    Args:
+        df: DataFrame z danymi
+        schema: Schemat danych
+        api_key: Klucz API OpenAI
+    
+    Returns:
+        DataCleaningSuggestions lub None w przypadku błędu
+    """
+    try:
+        from config.llm_client import get_openai_client, MODEL
+        
+        client = get_openai_client(api_key)
+        if not client:
+            return None
+            
+        # Przygotuj szczegółowe informacje o kolumnach
+        columns_details = []
+        for col, info in schema.columns.items():
+            details = {
+                "name": col,
+                "semantic_type": info.semantic_type,
+                "missing_ratio": info.missing_ratio,
+                "n_unique": info.n_unique,
+                "is_constant": info.is_constant,
+                "example_value": str(info.example_non_null) if info.example_non_null else None
+            }
+            columns_details.append(details)
+        
+        prompt = f"""
+Jako ekspert data science, przeanalizuj poniższy schemat danych i wygeneruj sugestie do czyszczenia danych.
+
+**Szczegółowe informacje o kolumnach:**
+{json.dumps(columns_details, ensure_ascii=False, indent=2)}
+
+**Zauważone problemy:**
+{chr(10).join(f"- {note}" for note in schema.notes)}
+
+Wygeneruj sugestie w następujących kategoriach:
+
+1. **Strategia obsługi braków danych** - jak obsłużyć wartości brakujące w każdej kolumnie?
+2. **Obsługa wartości odstających** - jak zidentyfikować i obsłużyć outliers?
+3. **Konwersje typów danych** - jakie konwersje są potrzebne?
+4. **Problemy jakościowe** - jakie inne problemy jakościowe zauważasz?
+
+**Odpowiedz w formacie JSON:**
+{{
+    "missing_data_strategy": {{
+        "kolumna1": "usunąć wiersze",
+        "kolumna2": "wypełnić medianą",
+        "kolumna3": "wypełnić modą"
+    }},
+    "outlier_treatment": {{
+        "kolumna1": "winsorization",
+        "kolumna2": "usunąć wartości > 3*std"
+    }},
+    "data_type_conversions": [
+        {{"column": "kolumna1", "from": "object", "to": "datetime", "reason": "zawiera daty"}},
+        {{"column": "kolumna2", "from": "object", "to": "category", "reason": "małe unikalne wartości"}}
+    ],
+    "quality_issues": [
+        "problem 1",
+        "problem 2"
+    ]
+}}
+"""
+        
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+        
+        result = json.loads(response.choices[0].message.content)
+        return DataCleaningSuggestions(
+            missing_data_strategy=result["missing_data_strategy"],
+            outlier_treatment=result["outlier_treatment"],
+            data_type_conversions=result["data_type_conversions"],
+            quality_issues=result["quality_issues"]
+        )
+        
+    except Exception as e:
+        print(f"❌ [Data Cleaning] Błąd: {e}")
+        return None
