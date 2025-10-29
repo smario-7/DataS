@@ -1,6 +1,7 @@
 # app.py - Streamlit aplikacja łącząca automatyczne wybieranie kolumny z trenowaniem modelu
 import streamlit as st
 import pandas as pd
+import json
 import time
 from pathlib import Path
 import base64
@@ -19,6 +20,7 @@ from packages.schema_utils import (
 )
 from packages.report_generator import generate_comprehensive_report, generate_pdf_report
 from packages.report_generator.chart_generator import generate_prediction_charts
+from packages.data_preparation import auto_clean_dataframe
 
 # Import konfiguracji OpenAI
 from config.settings import settings
@@ -101,6 +103,16 @@ if 'llm_charts' not in st.session_state:
     st.session_state.llm_charts = None
 if 'llm_pdf' not in st.session_state:
     st.session_state.llm_pdf = None
+
+# Inicjalizacja stanu przygotowania danych
+if 'raw_df' not in st.session_state:
+    st.session_state.raw_df = None
+if 'prepared_df' not in st.session_state:
+    st.session_state.prepared_df = None
+if 'prep_log' not in st.session_state:
+    st.session_state.prep_log = []
+if 'prep_done' not in st.session_state:
+    st.session_state.prep_done = False
 
 # Ścieżki
 FOLDER = Path(__file__).resolve()
@@ -275,12 +287,21 @@ def main():
                     st.session_state.ai_analyses_steps = {}
                     st.session_state.ml_results = None
                     st.session_state.last_analyzed_file = current_file
+                    # Reset przygotowania danych
+                    st.session_state.raw_df = None
+                    st.session_state.prepared_df = None
+                    st.session_state.prep_log = []
+                    st.session_state.prep_done = False
                 
                 df = _read_csv_data(uploaded_file, use_default_file)
+                st.session_state.raw_df = df
                 data_loaded = True
                 
-                # Analiza schematu
-                schema = infer_schema(df)
+                # Wybór aktywnego zbioru danych (oczyszczony lub surowy)
+                df_active = st.session_state.get('prepared_df') if st.session_state.get('prepared_df') is not None else df
+                
+                # Analiza schematu dla aktywnego zbioru
+                schema = infer_schema(df_active)
                 summary = schema_to_frame(schema)
                 
         except Exception as e:
@@ -331,7 +352,7 @@ def main():
                 # Prosty selectbox z tylko nazwami kolumn
                 selected_column = st.selectbox(
                     "Wybierz kolumnę docelową:",
-                    options=df.columns.tolist(),
+                    options=(st.session_state.get('prepared_df') if st.session_state.get('prepared_df') is not None else df).columns.tolist(),
                     key="manual_column_selector",
                     help="Kolumna docelowa to ta, którą model będzie próbował przewidzieć"
                 )
@@ -351,55 +372,8 @@ def main():
             permutation_repeats = st.number_input("Permutation repeats", min_value=3, max_value=20, value=5, step=1)
             test_size = st.slider("Test size", 0.1, 0.4, 0.2, 0.05)
             
-            # Przycisk uruchomienia analizy
-            run_analysis = st.button(
-                "🚀 Uruchom analizę",
-                type="primary",
-                help="Kliknij aby uruchomić analizę według wybranej strategii"
-            )
-            
-            # Logika uruchomienia analizy
-            if run_analysis:
-                # Wyczyść tylko wyniki ML, ale zachowaj ai_analyses_steps
-                st.session_state.analysis_result = None
-                st.session_state.analysis_triggered = False
-                st.session_state.last_analysis_params = None
-                st.session_state.ml_results = None
-                
-                # Sprawdź czy dla strategii manual wybrano kolumnę
-                if user_choice_label == "manual" and 'manual_column_choice' not in st.session_state:
-                    st.error("⚠️ Proszę wybrać kolumnę docelową dla strategii ręcznej")
-                    st.stop()
-                
-                # Określ user_choice na podstawie wybranej strategii
-                if user_choice_label == "auto_ai":
-                    actual_user_choice = None
-                elif user_choice_label == "heuristics":
-                    actual_user_choice = "__force_heuristics__"
-                elif user_choice_label == "manual":
-                    actual_user_choice = st.session_state.manual_column_choice  # Użyj wybranej kolumny
-                else:
-                    actual_user_choice = "__force_manual__"
-                
-                
-                # Zapisz parametry analizy
-                analysis_params = {
-                    'strategy_label': user_choice_label,
-                    'user_choice': actual_user_choice,
-                    'sample_n': sample_n,
-                    'random_state': random_state,
-                    'top_n_features': top_n_features,
-                    'permutation_repeats': permutation_repeats,
-                    'test_size': test_size
-                }
-                
-                st.session_state.analysis_triggered = True
-                st.session_state.last_analysis_params = analysis_params
-                st.session_state.analysis_result = None
-                st.session_state.ml_results = None
-                
-                strategies = get_available_strategies()
-                st.success(f"🚀 Uruchamianie analizy: {strategies[user_choice_label]}")
+            # Przycisk przeniesiony do zakładki „📊 Podsumowanie danych”
+            st.info("Przycisk ‘🚀 Uruchom analizę’ jest teraz w zakładce ‘📊 Podsumowanie danych’.")
                 
             # Info o strategiach
             st.markdown("---")
@@ -427,17 +401,20 @@ def main():
 
     # Wyświetl informacje o załadowanych danych
     if data_loaded:
+        active = st.session_state.get('prepared_df') if st.session_state.get('prepared_df') is not None else df
+        info_suffix = " (oczyszczone)" if st.session_state.get('prep_done') else " (surowe)"
         if uploaded_file is not None:
-            st.success(f"✅ Załadowano wgrane dane: {df.shape[0]} wierszy, {df.shape[1]} kolumn")
+            st.success(f"✅ Dane{info_suffix}: {active.shape[0]} wierszy, {active.shape[1]} kolumn")
             st.info(f"📁 Plik: {uploaded_file.name}")
         else:
-            st.success(f"✅ Załadowano domyślne dane: {df.shape[0]} wierszy, {df.shape[1]} kolumn")
+            st.success(f"✅ Dane{info_suffix}: {active.shape[0]} wierszy, {active.shape[1]} kolumn")
             st.info("📁 Plik: avocado.csv")
     else:
         st.info("📁 **Wybierz plik CSV lub zaznacz domyślny plik w sidebarze**")
 
     ### TABS ###
-    tab_summary, tab_selection, tab_ml, tab_results, tab_llm_report = st.tabs([
+    tab_prep, tab_summary, tab_selection, tab_ml, tab_results, tab_llm_report = st.tabs([
+        "🧹 Przygotowanie danych",
         "📊 Podsumowanie danych", 
         "🎯 Wybór targetu",
         "🤖 Trenowanie modelu",
@@ -446,16 +423,106 @@ def main():
 
     ])
 
+    with tab_prep:
+        st.markdown("## 🧹 Przygotowanie danych")
+        if data_loaded:
+            st.info("Po kliknięciu uruchomi się automatyczne oczyszczanie danych z logiem zmian.")
+            start_clean = st.button("🚿 Rozpocznij oczyszczanie", type="primary")
+            if start_clean:
+                st.session_state.prep_done = False
+                st.session_state.prep_log = []
+                progress = st.progress(0)
+                status = st.empty()
+
+                try:
+                    # wykonaj cleaning (atomowo) i zapisz log
+                    cleaned, prep_log = auto_clean_dataframe(st.session_state.raw_df if st.session_state.raw_df is not None else df)
+                    st.session_state.prepared_df = cleaned
+                    st.session_state.prep_log = prep_log
+                    st.session_state.prep_done = True
+                    progress.progress(100)
+                    status.success("✅ Oczyszczanie zakończone")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Błąd podczas oczyszczania: {e}")
+                    st.session_state.prep_done = False
+
+            # Po zakończeniu: pokazuj log i przyciski pobrania
+            if st.session_state.get('prep_log'):
+                st.markdown("### 🧭 Dziennik zmian")
+                for i, entry in enumerate(st.session_state.prep_log, start=1):
+                    with st.expander(f"Krok {i}: {entry.get('step')}"):
+                        st.json(entry)
+
+                colA, colB = st.columns(2)
+                with colA:
+                    if st.session_state.get('prepared_df') is not None:
+                        csv_bytes = st.session_state.prepared_df.to_csv(index=False).encode('utf-8')
+                        st.download_button("⬇️ Pobierz oczyszczony CSV", data=csv_bytes, file_name="prepared.csv", mime="text/csv")
+                with colB:
+                    log_bytes = json.dumps(st.session_state.prep_log, ensure_ascii=False, indent=2).encode('utf-8')
+                    st.download_button("⬇️ Pobierz log (JSON)", data=log_bytes, file_name="prep_log.json", mime="application/json")
+        else:
+            st.warning("❌ Brak danych – wgraj plik w panelu bocznym")
+
     with tab_summary:
         if data_loaded:
+            # Przycisk uruchomienia analizy (aktywny po przygotowaniu danych)
+            run_analysis = st.button(
+                "🚀 Uruchom analizę",
+                type="primary",
+                help="Kliknij aby uruchomić analizę według wybranej strategii",
+                disabled=not st.session_state.get('prep_done')
+            )
+
+            if run_analysis:
+                # Wyczyść tylko wyniki ML, ale zachowaj ai_analyses_steps
+                st.session_state.analysis_result = None
+                st.session_state.analysis_triggered = False
+                st.session_state.last_analysis_params = None
+                st.session_state.ml_results = None
+
+                # Walidacja strategii manual
+                if user_choice_label == "manual" and 'manual_column_choice' not in st.session_state:
+                    st.error("⚠️ Proszę wybrać kolumnę docelową dla strategii ręcznej (zakładka ‘🎯 Wybór targetu’)")
+                else:
+                    # Określ user_choice na podstawie wybranej strategii
+                    if user_choice_label == "auto_ai":
+                        actual_user_choice = None
+                    elif user_choice_label == "heuristics":
+                        actual_user_choice = "__force_heuristics__"
+                    elif user_choice_label == "manual":
+                        actual_user_choice = st.session_state.manual_column_choice
+                    else:
+                        actual_user_choice = "__force_manual__"
+
+                    # Zapisz parametry analizy
+                    analysis_params = {
+                        'strategy_label': user_choice_label,
+                        'user_choice': actual_user_choice,
+                        'sample_n': sample_n,
+                        'random_state': random_state,
+                        'top_n_features': top_n_features,
+                        'permutation_repeats': permutation_repeats,
+                        'test_size': test_size
+                    }
+
+                    st.session_state.analysis_triggered = True
+                    st.session_state.last_analysis_params = analysis_params
+                    st.session_state.analysis_result = None
+                    st.session_state.ml_results = None
+
+                    strategies = get_available_strategies()
+                    st.success(f"🚀 Uruchamianie analizy: {strategies[user_choice_label]}")
+
             st.markdown(f"### 📊 Analiza kolumn (sortowanie: **{select_column_summary_schema}**)")
             
             # Dodatkowe metryki
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("Wiersze", f"{df.shape[0]:,}")
+                st.metric("Wiersze", f"{df_active.shape[0]:,}")
             with col2:
-                st.metric("Kolumny", df.shape[1])
+                st.metric("Kolumny", df_active.shape[1])
             with col3:
                 missing_cols = sum(1 for col in schema.columns.values() if col.missing_ratio > 0.1)
                 st.metric("Kolumny z brakami >10%", missing_cols)
@@ -477,7 +544,7 @@ def main():
                 
                 # Określ typ problemu ML
                 selected_col = st.session_state.manual_column_choice
-                if pd.api.types.is_numeric_dtype(df[selected_col]):
+                if pd.api.types.is_numeric_dtype(df_active[selected_col]):
                     problem_type = "📊 Regresja"
                     model_type = "Regresja (przewidywanie wartości numerycznych)"
                 else:
@@ -488,19 +555,19 @@ def main():
                 col1, col2, col3, col4 = st.columns(4)
                 
                 with col1:
-                    st.metric("Typ danych", str(df[selected_col].dtype))
-                    st.metric("Unikalne wartości", df[selected_col].nunique())
+                    st.metric("Typ danych", str(df_active[selected_col].dtype))
+                    st.metric("Unikalne wartości", df_active[selected_col].nunique())
                 
                 with col2:
-                    st.metric("Wartości brakujące", df[selected_col].isnull().sum())
-                    st.metric("Procent braków", f"{(df[selected_col].isnull().sum() / len(df)) * 100:.1f}%")
+                    st.metric("Wartości brakujące", df_active[selected_col].isnull().sum())
+                    st.metric("Procent braków", f"{(df_active[selected_col].isnull().sum() / len(df_active)) * 100:.1f}%")
                 
                 with col3:
-                    if pd.api.types.is_numeric_dtype(df[selected_col]):
-                        st.metric("Min", f"{df[selected_col].min():.2f}")
-                        st.metric("Max", f"{df[selected_col].max():.2f}")
+                    if pd.api.types.is_numeric_dtype(df_active[selected_col]):
+                        st.metric("Min", f"{df_active[selected_col].min():.2f}")
+                        st.metric("Max", f"{df_active[selected_col].max():.2f}")
                     else:
-                        st.metric("Najczęstsza wartość", df[selected_col].mode().iloc[0] if not df[selected_col].mode().empty else "Brak")
+                        st.metric("Najczęstsza wartość", df_active[selected_col].mode().iloc[0] if not df_active[selected_col].mode().empty else "Brak")
                 
                 with col4:
                     st.metric("Typ problemu", problem_type)
@@ -577,7 +644,7 @@ def main():
                         st.info("📊 **Wysyłam zapytanie do LLM** o określenie domeny biznesowej danych...")
                         
                         try:
-                            business_domain = determine_business_domain(df, schema, st.session_state.openai_api_key.strip())
+                            business_domain = determine_business_domain(df_active, schema, st.session_state.openai_api_key.strip())
                             st.session_state.ai_analyses_steps['step1'] = business_domain
                             
                             st.success(f"✅ **Domena biznesowa**: {business_domain}")
@@ -595,7 +662,7 @@ def main():
                         
                         try:
                             business_domain = st.session_state.ai_analyses_steps['step1']
-                            target_with_domain = llm_guess_target_with_domain(df, schema, business_domain, st.session_state.openai_api_key.strip())
+                            target_with_domain = llm_guess_target_with_domain(df_active, schema, business_domain, st.session_state.openai_api_key.strip())
                             st.session_state.ai_analyses_steps['step2'] = target_with_domain
                             
                             st.success(f"✅ **Kolumna docelowa z domeną**: {target_with_domain}")
@@ -614,7 +681,7 @@ def main():
                         try:
                             business_domain = st.session_state.ai_analyses_steps['step1']
                             target_column = st.session_state.ai_analyses_steps['step2']
-                            correlations = analyze_column_correlations_by_names(df, schema, business_domain, target_column, st.session_state.openai_api_key.strip())
+                            correlations = analyze_column_correlations_by_names(df_active, schema, business_domain, target_column, st.session_state.openai_api_key.strip())
                             st.session_state.ai_analyses_steps['step3'] = correlations
                             
                             st.success("✅ **Analiza relacji między kolumnami** zakończona")
@@ -861,7 +928,7 @@ def main():
                     # Analiza wyboru targetu
                     try:
                         decision = display_target_selection_with_spinner(
-                            df, schema, user_choice, strategy_label, st.session_state.openai_api_key.strip() if st.session_state.openai_api_key else ""
+                            df_active, schema, user_choice, strategy_label, st.session_state.openai_api_key.strip() if st.session_state.openai_api_key else ""
                         )
                         
                         st.session_state.analysis_result = decision
@@ -985,7 +1052,7 @@ def main():
                             
                             # Uruchom trenowanie
                             result = train_model_with_auto_target(
-                                df=df,
+                                df=df_active,
                                 strategy=params['strategy_label'],
                                 sample_n=params['sample_n'],
                                 random_state=params['random_state'],
@@ -1164,7 +1231,7 @@ def main():
                         
                         
                         # Wygeneruj wykresy
-                        charts = generate_prediction_charts(df, target_column, ml_results, business_domain)
+                        charts = generate_prediction_charts(df_active, target_column, ml_results, business_domain)
                         
                         # Wygeneruj raport
                         report = generate_comprehensive_report(
@@ -1172,7 +1239,7 @@ def main():
                             target_column=target_column,
                             ai_analyses_steps=ai_analyses_steps,
                             ml_results=ml_results,
-                            df=df,
+                            df=df_active,
                             api_key=st.session_state.openai_api_key.strip()
                         )
                         
