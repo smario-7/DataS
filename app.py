@@ -142,6 +142,7 @@ def show_welcome_page():
         api_key = st.text_input(
             "Klucz API OpenAI:",
             type="password",
+            value=st.session_state.get('openai_api_key', ''),  # Dodać value
             placeholder="sk-...",
             help="Wprowadź swój klucz API OpenAI. Możesz go znaleźć na platform.openai.com"
         )
@@ -195,7 +196,9 @@ def main():
         st.session_state.show_main_app = False
     
     if 'openai_api_key' not in st.session_state:
-        st.session_state.openai_api_key = ""
+        # Wczytaj z .env jeśli dostępny
+        env_api_key = settings.openai_api_key.strip()
+        st.session_state.openai_api_key = env_api_key if env_api_key else ""
     
     # Jeśli nie pokazano jeszcze głównej aplikacji, pokaż stronę powitalną
     if not st.session_state.show_main_app:
