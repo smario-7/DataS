@@ -1,0 +1,7 @@
+.env
+.vscode
+/out
+*.log
+__pycache__
+
+snippets/

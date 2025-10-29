@@ -1,0 +1,19 @@
+name: DataS
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pandas
+  - matplotlib
+  - psycopg2
+  - plotly
+  - seaborn
+  - itables
+  - jupyterlab
+  - streamlit
+  - pydantic-settings
+  - boto3
+  - pycaret
+  - pytest
+  - openai
+  - reportlab
