@@ -1,0 +1,12 @@
+{
+  "datasetId": "avocado",
+  "target": "Total Volume",
+  "problemType": "regresja",
+  "metrics": {
+    "model": "LinearRegression",
+    "R2": 0.9999999999284234,
+    "MAE": 7.116293889125954,
+    "RMSE": 30.81504583602943
+  },
+  "modelId": "d863c752-6418-461d-94e7-6069d8ab3932"
+}

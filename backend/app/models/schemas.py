@@ -64,7 +64,7 @@ class SummaryResponse(BaseModel):
 
 class AIStep1Request(BaseModel):
     datasetId: str
-    openaiApiKey: str
+    openaiApiKey: Optional[str] = None
 
 
 class AIStep1Response(BaseModel):
@@ -74,7 +74,7 @@ class AIStep1Response(BaseModel):
 class AIStep2Request(BaseModel):
     datasetId: str
     businessDomain: str
-    openaiApiKey: str
+    openaiApiKey: Optional[str] = None
 
 
 class AIStep2Response(BaseModel):
@@ -85,7 +85,7 @@ class AIStep3Request(BaseModel):
     datasetId: str
     businessDomain: str
     targetColumn: str
-    openaiApiKey: str
+    openaiApiKey: Optional[str] = None
 
 
 class AIStep3Response(BaseModel):
@@ -97,7 +97,21 @@ class AIStep4Request(BaseModel):
     datasetId: str
     businessDomain: str
     targetColumn: str
-    openaiApiKey: str
+    openaiApiKey: Optional[str] = None
+
+
+class LLMReportRequest(BaseModel):
+    datasetId: str
+    modelId: str
+    businessDomain: str
+    targetColumn: str
+    aiSteps: Dict[str, Any]
+    openaiApiKey: Optional[str] = None
+
+
+class LLMReportResponse(BaseModel):
+    reportId: str
+    jobId: str
 
 
 class AIStep4Response(BaseModel):
@@ -106,5 +120,10 @@ class AIStep4Response(BaseModel):
     dataTypeConversions: List[Dict[str, Any]]
     qualityIssues: List[str]
     targetSpecificSuggestions: List[str]
+
+
+class OpenAIStatusResponse(BaseModel):
+    hasEnvKey: bool
+    source: str  # "env" | "none"
 
 

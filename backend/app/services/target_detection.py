@@ -204,12 +204,27 @@ def detect_target_service(req: TargetDetectRequest) -> TargetDetectResponse:
     df = load_dataset(req.datasetId)
     schema = infer_schema(df)
     
+    # Użyj klucza z .env jeśli frontend nie podał klucza lub podał '__env__'
+    api_key = None
+    if req.openaiApiKey and req.openaiApiKey.strip() and req.openaiApiKey != '__env__':
+        api_key = req.openaiApiKey.strip()
+    else:
+        # Spróbuj użyć klucza z .env
+        import sys
+        import os
+        from pathlib import Path
+        project_root = Path(__file__).resolve().parent.parent.parent.parent
+        sys.path.insert(0, str(project_root))
+        from config.settings import settings
+        env_key = settings.openai_api_key.strip() if settings.openai_api_key else None
+        api_key = env_key if env_key else None
+    
     # Użyj choose_target z target_utils, który obsługuje LLM
     decision = choose_target(
         df=df,
         schema=schema,
         user_choice=req.userTarget,
-        api_key=req.openaiApiKey if req.openaiApiKey else None
+        api_key=api_key
     )
     
     if decision.target is None:
