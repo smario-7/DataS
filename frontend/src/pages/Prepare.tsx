@@ -6,11 +6,14 @@ import { useState } from 'react'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 
 export default function PreparePage() {
-  const { datasetId } = useFlowStore()
+  const { datasetId, setPrepDone } = useFlowStore()
   const [result, setResult] = useState<any>()
   const mut = useMutation({
     mutationFn: () => prepareData({ datasetId: datasetId! }),
-    onSuccess: (d) => setResult(d),
+    onSuccess: (d) => {
+      setResult(d)
+      setPrepDone(true)
+    },
   })
 
   const downloadCSV = () => {

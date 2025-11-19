@@ -74,4 +74,30 @@ export async function aiStep4(req: AIStep4Request) {
   return data
 }
 
+export type LLMReportRequest = { datasetId: string; modelId: string; businessDomain: string; targetColumn: string; aiSteps: Record<string, any>; openaiApiKey: string }
+export async function generateLLMReport(req: LLMReportRequest) {
+  const { data } = await api.post('/v1/report/llm', req)
+  return data
+}
+
+export async function downloadReportPDF(reportId: string) {
+  const response = await api.get(`/v1/report/${reportId}/pdf`, { responseType: 'blob' })
+  return response.data
+}
+
+export async function downloadReportMarkdown(reportId: string) {
+  const response = await api.get(`/v1/report/${reportId}/markdown`, { responseType: 'blob' })
+  return response.data
+}
+
+export async function getReportCharts(reportId: string) {
+  const { data } = await api.get(`/v1/report/${reportId}/charts`)
+  return data
+}
+
+export async function getOpenAIStatus() {
+  const { data } = await api.get('/v1/config/openai-status')
+  return data
+}
+
 

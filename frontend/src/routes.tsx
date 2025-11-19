@@ -1,5 +1,7 @@
-import { AppBar, Box, Container, Toolbar, Typography } from '@mui/material'
+import { AppBar, Box, Container, Toolbar, Typography, IconButton } from '@mui/material'
+import SettingsIcon from '@mui/icons-material/Settings'
 import { Route, Routes, NavLink, Navigate } from 'react-router-dom'
+import { useState } from 'react'
 import { useFlowStore } from './store/useFlowStore'
 import WelcomePage from './pages/Welcome'
 import UploadPage from './pages/Upload'
@@ -8,6 +10,7 @@ import TargetPage from './pages/Target'
 import TrainPage from './pages/Train'
 import ReportsPage from './pages/Reports'
 import SummaryPage from './pages/Summary'
+import Sidebar from './components/Sidebar'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { showMainApp } = useFlowStore()
@@ -19,6 +22,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
 export default function AppRoutes() {
   const { showMainApp } = useFlowStore()
+  const [sidebarOpen, setSidebarOpen] = useState(false)
 
   if (!showMainApp) {
     return (
@@ -40,6 +44,9 @@ export default function AppRoutes() {
           <NavLink to="/target" style={{ color: 'inherit', textDecoration: 'none' }}>Target</NavLink>
           <NavLink to="/train" style={{ color: 'inherit', textDecoration: 'none' }}>Train</NavLink>
           <NavLink to="/reports" style={{ color: 'inherit', textDecoration: 'none' }}>Reports</NavLink>
+          <IconButton color="inherit" onClick={() => setSidebarOpen(true)}>
+            <SettingsIcon />
+          </IconButton>
         </Toolbar>
       </AppBar>
       <Container sx={{ py: 3, flex: 1 }}>
@@ -53,6 +60,7 @@ export default function AppRoutes() {
           <Route path="/reports" element={<ProtectedRoute><ReportsPage /></ProtectedRoute>} />
         </Routes>
       </Container>
+      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
     </Box>
   )
 }

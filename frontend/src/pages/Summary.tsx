@@ -1,17 +1,64 @@
-import { Button, Stack, Typography, Paper, Alert, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Box, Select, MenuItem, FormControl, InputLabel } from '@mui/material'
-import { useQuery } from '@tanstack/react-query'
-import { getSummary } from '../services/api'
+import { Button, Stack, Typography, Paper, Alert, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Box, Select, MenuItem, FormControl, InputLabel, Grid } from '@mui/material'
+import { useQuery, useMutation } from '@tanstack/react-query'
+import { getSummary, detectTarget } from '../services/api'
 import { useFlowStore } from '../store/useFlowStore'
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 export default function SummaryPage() {
-  const { datasetId } = useFlowStore()
+  const {
+    datasetId,
+    prepDone,
+    strategy,
+    manualColumnChoice,
+    openaiApiKey,
+    setAnalysisResult,
+    setLastAnalysisParams,
+    setMLResults,
+    setAISteps,
+    mlSettings,
+  } = useFlowStore()
   const [sortBy, setSortBy] = useState('missing_ratio')
+  const navigate = useNavigate()
   
   const { data: summary, isLoading, error } = useQuery({
     queryKey: ['summary', datasetId],
     enabled: !!datasetId,
     queryFn: () => getSummary(datasetId!),
+  })
+
+  const runAnalysisMut = useMutation({
+    mutationFn: () => {
+      let userTarget: string | undefined
+      if (strategy === 'manual') {
+        if (!manualColumnChoice) {
+          throw new Error('⚠️ Proszę wybrać kolumnę docelową dla strategii ręcznej (w sidebar)')
+        }
+        userTarget = manualColumnChoice
+      } else if (strategy === 'heuristics') {
+        userTarget = '__force_heuristics__'
+      }
+
+      return detectTarget({
+        datasetId: datasetId!,
+        userTarget,
+        openaiApiKey: strategy === 'auto_ai' 
+          ? (openaiApiKey && openaiApiKey !== '__env__' ? openaiApiKey : undefined)
+          : undefined,
+      })
+    },
+    onSuccess: (data) => {
+      const analysisParams = {
+        strategy_label: strategy,
+        user_choice: strategy === 'manual' ? manualColumnChoice : strategy === 'heuristics' ? '__force_heuristics__' : undefined,
+        ...mlSettings,
+      }
+      setLastAnalysisParams(analysisParams)
+      setAnalysisResult(data)
+      setMLResults(undefined)
+      setAISteps({})
+      navigate('/target')
+    },
   })
 
   const sortedColumns = summary?.columns ? [...summary.columns].sort((a: any, b: any) => {
@@ -36,19 +83,53 @@ export default function SummaryPage() {
           {summary && (
             <>
               <Paper sx={{ p: 3 }}>
-                <Stack direction="row" spacing={2} alignItems="center">
-                  <Typography variant="h6">Metryki</Typography>
-                  <Typography>Wiersze: <strong>{summary.n_rows.toLocaleString()}</strong></Typography>
-                  <Typography>Kolumny: <strong>{summary.n_cols}</strong></Typography>
-                  <Typography>
-                    Kolumny z brakami &gt;10%: <strong>
-                      {summary.columns.filter((c: any) => (c.missing_ratio || 0) > 0.1).length}
-                    </strong>
-                  </Typography>
-                  <Typography>
-                    Kandydaci na klucz: <strong>{summary.primary_key_candidates?.length || 0}</strong>
-                  </Typography>
+                <Stack spacing={2}>
+                  <Button
+                    variant="contained"
+                    size="large"
+                    onClick={() => runAnalysisMut.mutate()}
+                    disabled={!prepDone || runAnalysisMut.isPending}
+                    fullWidth
+                  >
+                    🚀 Uruchom analizę
+                  </Button>
+                  {!prepDone && (
+                    <Alert severity="warning">
+                      Najpierw przygotuj dane na stronie Prepare
+                    </Alert>
+                  )}
+                  {strategy === 'manual' && !manualColumnChoice && (
+                    <Alert severity="warning">
+                      ⚠️ Proszę wybrać kolumnę docelową dla strategii ręcznej (w sidebar)
+                    </Alert>
+                  )}
+                  {runAnalysisMut.isError && (
+                    <Alert severity="error">Błąd: {String(runAnalysisMut.error)}</Alert>
+                  )}
                 </Stack>
+              </Paper>
+
+              <Paper sx={{ p: 3 }}>
+                <Grid container spacing={2}>
+                  <Grid item xs={12} sm={6} md={3}>
+                    <Typography variant="body2" color="text.secondary">Wiersze</Typography>
+                    <Typography variant="h6">{summary.n_rows.toLocaleString()}</Typography>
+                  </Grid>
+                  <Grid item xs={12} sm={6} md={3}>
+                    <Typography variant="body2" color="text.secondary">Kolumny</Typography>
+                    <Typography variant="h6">{summary.n_cols}</Typography>
+                  </Grid>
+                  <Grid item xs={12} sm={6} md={3}>
+                    <Typography variant="body2" color="text.secondary">Kolumny z brakami &gt;10%</Typography>
+                    <Typography variant="h6">
+                      {summary.columns.filter((c: any) => (c.missing_ratio || 0) > 0.1).length}
+                    </Typography>
+                  </Grid>
+                  <Grid item xs={12} sm={6} md={3}>
+                    <Typography variant="body2" color="text.secondary">Kandydaci na klucz</Typography>
+                    <Typography variant="h6">{summary.primary_key_candidates?.length || 0}</Typography>
+                  </Grid>
+                </Grid>
               </Paper>
 
               <Paper sx={{ p: 3 }}>
@@ -112,6 +193,53 @@ export default function SummaryPage() {
                       <Alert key={idx} severity="warning">{note}</Alert>
                     ))}
                   </Stack>
+                </Paper>
+              )}
+
+              {strategy === 'manual' && manualColumnChoice && summary && (
+                <Paper sx={{ p: 3 }}>
+                  <Typography variant="h6" gutterBottom>👤 Podgląd wybranej kolumny docelowej</Typography>
+                  {(() => {
+                    const selectedCol = summary.columns.find((c: any) => c.name === manualColumnChoice)
+                    if (!selectedCol) return null
+                    
+                    const isNumeric = selectedCol.pandas_dtype?.includes('int') || selectedCol.pandas_dtype?.includes('float')
+                    const problemType = isNumeric ? '📊 Regresja' : '🏷️ Klasyfikacja'
+                    const modelType = isNumeric
+                      ? 'Regresja (przewidywanie wartości numerycznych)'
+                      : 'Klasyfikacja (przewidywanie kategorii)'
+                    
+                    return (
+                      <Grid container spacing={2}>
+                        <Grid item xs={12} sm={6} md={3}>
+                          <Typography variant="body2" color="text.secondary">Typ danych</Typography>
+                          <Typography variant="body1">{selectedCol.pandas_dtype || 'N/A'}</Typography>
+                          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>Unikalne wartości</Typography>
+                          <Typography variant="body1">{selectedCol.n_unique || 'N/A'}</Typography>
+                        </Grid>
+                        <Grid item xs={12} sm={6} md={3}>
+                          <Typography variant="body2" color="text.secondary">Wartości brakujące</Typography>
+                          <Typography variant="body1">{selectedCol.n_missing || 0}</Typography>
+                          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>Procent braków</Typography>
+                          <Typography variant="body1">
+                            {((selectedCol.missing_ratio || 0) * 100).toFixed(1)}%
+                          </Typography>
+                        </Grid>
+                        <Grid item xs={12} sm={6} md={3}>
+                          <Typography variant="body2" color="text.secondary">Typ problemu</Typography>
+                          <Typography variant="body1">{problemType}</Typography>
+                          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>Proponowany model</Typography>
+                          <Typography variant="body1" sx={{ fontSize: '0.875rem' }}>{modelType}</Typography>
+                        </Grid>
+                        <Grid item xs={12} sm={6} md={3}>
+                          <Typography variant="body2" color="text.secondary">Typ semantyczny</Typography>
+                          <Typography variant="body1">{selectedCol.semantic_type || 'N/A'}</Typography>
+                          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>Ratio unikalnych</Typography>
+                          <Typography variant="body1">{(selectedCol.unique_ratio || 0).toFixed(3)}</Typography>
+                        </Grid>
+                      </Grid>
+                    )
+                  })()}
                 </Paper>
               )}
             </>

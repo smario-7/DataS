@@ -1,61 +1,90 @@
-import { Button, Stack, TextField, Typography, Paper, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Alert, LinearProgress, Box, Accordion, AccordionSummary, AccordionDetails } from '@mui/material'
+import { Button, Stack, TextField, Typography, Paper, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Alert, LinearProgress, Box, Accordion, AccordionSummary, AccordionDetails, Grid } from '@mui/material'
 import { useMutation } from '@tanstack/react-query'
 import { detectTarget, aiStep1, aiStep2, aiStep3, aiStep4 } from '../services/api'
 import { useFlowStore } from '../store/useFlowStore'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 
 export default function TargetPage() {
-  const { datasetId, target, setTarget, openaiApiKey } = useFlowStore()
+  const {
+    datasetId,
+    target,
+    setTarget,
+    openaiApiKey,
+    analysisResult,
+    setAnalysisResult,
+    aiSteps,
+    setAISteps,
+    setMLResults,
+    setLastAnalysisParams,
+  } = useFlowStore()
   const [userTarget, setUserTarget] = useState<string>('')
-  const [out, setOut] = useState<any>()
-  const [aiSteps, setAiSteps] = useState<any>({})
+  const [out, setOut] = useState<any>(analysisResult)
   
+  useEffect(() => {
+    if (analysisResult) {
+      setOut(analysisResult)
+      setTarget(analysisResult.suggestedTarget, analysisResult.problemType)
+    }
+  }, [analysisResult, setTarget])
+
   const mut = useMutation({
     mutationFn: () => detectTarget({ 
       datasetId: datasetId!, 
       userTarget: userTarget || undefined,
-      openaiApiKey: openaiApiKey || undefined
+      openaiApiKey: openaiApiKey && openaiApiKey !== '__env__' ? openaiApiKey : undefined
     }),
     onSuccess: (d) => {
       setOut(d)
+      setAnalysisResult(d)
       setTarget(d.suggestedTarget, d.problemType)
     },
   })
 
   const step1Mut = useMutation({
-    mutationFn: () => aiStep1({ datasetId: datasetId!, openaiApiKey: openaiApiKey! }),
-    onSuccess: (d) => setAiSteps((s: any) => ({ ...s, step1: d.businessDomain }))
+    mutationFn: () => aiStep1({ 
+      datasetId: datasetId!, 
+      openaiApiKey: openaiApiKey && openaiApiKey !== '__env__' ? openaiApiKey : undefined 
+    }),
+    onSuccess: (d) => setAISteps({ step1: d.businessDomain })
   })
 
   const step2Mut = useMutation({
     mutationFn: () => aiStep2({ 
       datasetId: datasetId!, 
-      businessDomain: aiSteps.step1, 
-      openaiApiKey: openaiApiKey! 
+      businessDomain: aiSteps.step1!, 
+      openaiApiKey: openaiApiKey && openaiApiKey !== '__env__' ? openaiApiKey : undefined 
     }),
-    onSuccess: (d) => setAiSteps((s: any) => ({ ...s, step2: d.targetColumn }))
+    onSuccess: (d) => setAISteps({ step2: d.targetColumn })
   })
 
   const step3Mut = useMutation({
     mutationFn: () => aiStep3({ 
       datasetId: datasetId!, 
-      businessDomain: aiSteps.step1, 
+      businessDomain: aiSteps.step1!, 
       targetColumn: aiSteps.step2 || out?.suggestedTarget, 
-      openaiApiKey: openaiApiKey! 
+      openaiApiKey: openaiApiKey && openaiApiKey !== '__env__' ? openaiApiKey : undefined 
     }),
-    onSuccess: (d) => setAiSteps((s: any) => ({ ...s, step3: d }))
+    onSuccess: (d) => setAISteps({ step3: d })
   })
 
   const step4Mut = useMutation({
     mutationFn: () => aiStep4({ 
       datasetId: datasetId!, 
-      businessDomain: aiSteps.step1, 
+      businessDomain: aiSteps.step1!, 
       targetColumn: aiSteps.step2 || out?.suggestedTarget, 
-      openaiApiKey: openaiApiKey! 
+      openaiApiKey: openaiApiKey && openaiApiKey !== '__env__' ? openaiApiKey : undefined 
     }),
-    onSuccess: (d) => setAiSteps((s: any) => ({ ...s, step4: d }))
+    onSuccess: (d) => setAISteps({ step4: d })
   })
+
+  const handleResetAnalysis = () => {
+    setAnalysisResult(undefined)
+    setAISteps({})
+    setMLResults(undefined)
+    setLastAnalysisParams(undefined)
+    setOut(undefined)
+  }
 
   const sourceMap: Record<string, string> = {
     user_choice: '🙋 Wybór użytkownika',
@@ -64,7 +93,7 @@ export default function TargetPage() {
     none: '❌ Brak decyzji'
   }
 
-  const showAiSteps = out?.source === 'llm_guess' && openaiApiKey
+  const showAiSteps = out?.source === 'llm_guess' && (openaiApiKey || openaiApiKeySource === 'env')
 
   return (
     <Stack spacing={3}>
@@ -196,33 +225,67 @@ export default function TargetPage() {
                       <Alert severity="success" sx={{ mb: 2 }}>
                         ✅ Krok 3: Analiza korelacji zakończona
                       </Alert>
-                      <Accordion>
+                      <Accordion defaultExpanded>
                         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                          <Typography>Korelacje między kolumnami</Typography>
+                          <Typography>🔗 Relacje między kolumnami</Typography>
                         </AccordionSummary>
                         <AccordionDetails>
-                          <TableContainer>
-                            <Table size="small">
-                              <TableHead>
-                                <TableRow>
-                                  <TableCell>Kolumna 1</TableCell>
-                                  <TableCell>Kolumna 2</TableCell>
-                                  <TableCell>Siła</TableCell>
-                                  <TableCell>Typ</TableCell>
-                                </TableRow>
-                              </TableHead>
-                              <TableBody>
-                                {aiSteps.step3.correlations?.slice(0, 10).map((c: any, idx: number) => (
-                                  <TableRow key={idx}>
-                                    <TableCell>{c.column1}</TableCell>
-                                    <TableCell>{c.column2}</TableCell>
-                                    <TableCell>{c.correlation_strength}</TableCell>
-                                    <TableCell>{c.correlation_type}</TableCell>
-                                  </TableRow>
-                                ))}
-                              </TableBody>
-                            </Table>
-                          </TableContainer>
+                          <Stack spacing={2}>
+                            {aiSteps.step3.correlations && aiSteps.step3.correlations.length > 0 && (
+                              <Box>
+                                <Typography variant="subtitle2" gutterBottom>📊 Korelacje między kolumnami</Typography>
+                                <TableContainer>
+                                  <Table size="small">
+                                    <TableHead>
+                                      <TableRow>
+                                        <TableCell>Kolumna 1</TableCell>
+                                        <TableCell>Kolumna 2</TableCell>
+                                        <TableCell>Siła korelacji</TableCell>
+                                        <TableCell>Typ korelacji</TableCell>
+                                        <TableCell>Uzasadnienie biznesowe</TableCell>
+                                      </TableRow>
+                                    </TableHead>
+                                    <TableBody>
+                                      {aiSteps.step3.correlations.map((c: any, idx: number) => (
+                                        <TableRow key={idx}>
+                                          <TableCell>{c.column1}</TableCell>
+                                          <TableCell>{c.column2}</TableCell>
+                                          <TableCell>{c.correlation_strength}</TableCell>
+                                          <TableCell>{c.correlation_type}</TableCell>
+                                          <TableCell>{c.business_reason}</TableCell>
+                                        </TableRow>
+                                      ))}
+                                    </TableBody>
+                                  </Table>
+                                </TableContainer>
+                              </Box>
+                            )}
+                            {aiSteps.step3.targetCorrelations && aiSteps.step3.targetCorrelations.length > 0 && (
+                              <Box>
+                                <Typography variant="subtitle2" gutterBottom>🎯 Korelacje z kolumną docelową</Typography>
+                                <TableContainer>
+                                  <Table size="small">
+                                    <TableHead>
+                                      <TableRow>
+                                        <TableCell>Kolumna</TableCell>
+                                        <TableCell>Oczekiwany wpływ</TableCell>
+                                        <TableCell>Relacja</TableCell>
+                                      </TableRow>
+                                    </TableHead>
+                                    <TableBody>
+                                      {aiSteps.step3.targetCorrelations.map((c: any, idx: number) => (
+                                        <TableRow key={idx}>
+                                          <TableCell>{c.column}</TableCell>
+                                          <TableCell>{c.expected_impact}</TableCell>
+                                          <TableCell>{c.relationship}</TableCell>
+                                        </TableRow>
+                                      ))}
+                                    </TableBody>
+                                  </Table>
+                                </TableContainer>
+                              </Box>
+                            )}
+                          </Stack>
                         </AccordionDetails>
                       </Accordion>
                       <Button 
@@ -242,43 +305,213 @@ export default function TargetPage() {
                       <Alert severity="success" sx={{ mb: 2 }}>
                         ✅ Wszystkie analizy AI zakończone!
                       </Alert>
-                      <Accordion>
-                        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                          <Typography>Sugestie czyszczenia danych</Typography>
-                        </AccordionSummary>
-                        <AccordionDetails>
-                          <Stack spacing={2}>
-                            {aiSteps.step4.missingDataStrategy && (
-                              <Box>
-                                <Typography variant="subtitle2">Strategie obsługi braków</Typography>
-                                {Object.entries(aiSteps.step4.missingDataStrategy).slice(0, 5).map(([col, strat]: [string, any]) => (
-                                  <Typography key={col} variant="body2">{col}: {strat}</Typography>
-                                ))}
-                              </Box>
-                            )}
-                            {aiSteps.step4.qualityIssues && aiSteps.step4.qualityIssues.length > 0 && (
-                              <Box>
-                                <Typography variant="subtitle2">Problemy jakościowe</Typography>
-                                {aiSteps.step4.qualityIssues.slice(0, 5).map((issue: string, idx: number) => (
-                                  <Typography key={idx} variant="body2">• {issue}</Typography>
-                                ))}
-                              </Box>
-                            )}
-                          </Stack>
-                        </AccordionDetails>
-                      </Accordion>
+                      
+                      <Stack spacing={2}>
+                        <Accordion defaultExpanded>
+                          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                            <Typography>🏢 Domena biznesowa</Typography>
+                          </AccordionSummary>
+                          <AccordionDetails>
+                            <Alert severity="success">
+                              <strong>Domena biznesowa:</strong> {aiSteps.step1 || 'Brak'}
+                            </Alert>
+                          </AccordionDetails>
+                        </Accordion>
+
+                        <Accordion defaultExpanded>
+                          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                            <Typography>🎯 Kolumna docelowa (AI)</Typography>
+                          </AccordionSummary>
+                          <AccordionDetails>
+                            <Alert severity="success">
+                              <strong>Kolumna docelowa:</strong> {aiSteps.step2 || 'Brak'}
+                            </Alert>
+                          </AccordionDetails>
+                        </Accordion>
+
+                        <Accordion defaultExpanded>
+                          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                            <Typography>🔗 Relacje między kolumnami</Typography>
+                          </AccordionSummary>
+                          <AccordionDetails>
+                            <Stack spacing={2}>
+                              {aiSteps.step3?.correlations && aiSteps.step3.correlations.length > 0 && (
+                                <Box>
+                                  <Typography variant="subtitle2" gutterBottom>📊 Korelacje między kolumnami</Typography>
+                                  <TableContainer>
+                                    <Table size="small">
+                                      <TableHead>
+                                        <TableRow>
+                                          <TableCell>Kolumna 1</TableCell>
+                                          <TableCell>Kolumna 2</TableCell>
+                                          <TableCell>Siła korelacji</TableCell>
+                                          <TableCell>Typ korelacji</TableCell>
+                                          <TableCell>Uzasadnienie biznesowe</TableCell>
+                                        </TableRow>
+                                      </TableHead>
+                                      <TableBody>
+                                        {aiSteps.step3.correlations.map((c: any, idx: number) => (
+                                          <TableRow key={idx}>
+                                            <TableCell>{c.column1}</TableCell>
+                                            <TableCell>{c.column2}</TableCell>
+                                            <TableCell>{c.correlation_strength}</TableCell>
+                                            <TableCell>{c.correlation_type}</TableCell>
+                                            <TableCell>{c.business_reason}</TableCell>
+                                          </TableRow>
+                                        ))}
+                                      </TableBody>
+                                    </Table>
+                                  </TableContainer>
+                                </Box>
+                              )}
+                              {aiSteps.step3?.targetCorrelations && aiSteps.step3.targetCorrelations.length > 0 && (
+                                <Box>
+                                  <Typography variant="subtitle2" gutterBottom>🎯 Korelacje z kolumną docelową</Typography>
+                                  <TableContainer>
+                                    <Table size="small">
+                                      <TableHead>
+                                        <TableRow>
+                                          <TableCell>Kolumna</TableCell>
+                                          <TableCell>Oczekiwany wpływ</TableCell>
+                                          <TableCell>Relacja</TableCell>
+                                        </TableRow>
+                                      </TableHead>
+                                      <TableBody>
+                                        {aiSteps.step3.targetCorrelations.map((c: any, idx: number) => (
+                                          <TableRow key={idx}>
+                                            <TableCell>{c.column}</TableCell>
+                                            <TableCell>{c.expected_impact}</TableCell>
+                                            <TableCell>{c.relationship}</TableCell>
+                                          </TableRow>
+                                        ))}
+                                      </TableBody>
+                                    </Table>
+                                  </TableContainer>
+                                </Box>
+                              )}
+                            </Stack>
+                          </AccordionDetails>
+                        </Accordion>
+
+                        <Accordion defaultExpanded>
+                          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                            <Typography>🧹 Sugestie czyszczenia danych</Typography>
+                          </AccordionSummary>
+                          <AccordionDetails>
+                            <Stack spacing={2}>
+                              {aiSteps.step4.missingDataStrategy && Object.keys(aiSteps.step4.missingDataStrategy).length > 0 && (
+                                <Box>
+                                  <Typography variant="subtitle2" gutterBottom>🔍 Strategie obsługi brakujących danych</Typography>
+                                  <TableContainer>
+                                    <Table size="small">
+                                      <TableHead>
+                                        <TableRow>
+                                          <TableCell>Kolumna</TableCell>
+                                          <TableCell>Strategia</TableCell>
+                                        </TableRow>
+                                      </TableHead>
+                                      <TableBody>
+                                        {Object.entries(aiSteps.step4.missingDataStrategy).map(([col, strat]: [string, any], idx: number) => (
+                                          <TableRow key={idx}>
+                                            <TableCell>{col}</TableCell>
+                                            <TableCell>{strat}</TableCell>
+                                          </TableRow>
+                                        ))}
+                                      </TableBody>
+                                    </Table>
+                                  </TableContainer>
+                                </Box>
+                              )}
+                              {aiSteps.step4.outlierTreatment && Object.keys(aiSteps.step4.outlierTreatment).length > 0 && (
+                                <Box>
+                                  <Typography variant="subtitle2" gutterBottom>📊 Obsługa wartości odstających</Typography>
+                                  <TableContainer>
+                                    <Table size="small">
+                                      <TableHead>
+                                        <TableRow>
+                                          <TableCell>Kolumna</TableCell>
+                                          <TableCell>Metoda obsługi</TableCell>
+                                        </TableRow>
+                                      </TableHead>
+                                      <TableBody>
+                                        {Object.entries(aiSteps.step4.outlierTreatment).map(([col, treatment]: [string, any], idx: number) => (
+                                          <TableRow key={idx}>
+                                            <TableCell>{col}</TableCell>
+                                            <TableCell>{treatment}</TableCell>
+                                          </TableRow>
+                                        ))}
+                                      </TableBody>
+                                    </Table>
+                                  </TableContainer>
+                                </Box>
+                              )}
+                              {aiSteps.step4.dataTypeConversions && aiSteps.step4.dataTypeConversions.length > 0 && (
+                                <Box>
+                                  <Typography variant="subtitle2" gutterBottom>🔄 Sugerowane konwersje typów</Typography>
+                                  <TableContainer>
+                                    <Table size="small">
+                                      <TableHead>
+                                        <TableRow>
+                                          <TableCell>Kolumna</TableCell>
+                                          <TableCell>Z typu</TableCell>
+                                          <TableCell>Na typ</TableCell>
+                                          <TableCell>Powód</TableCell>
+                                        </TableRow>
+                                      </TableHead>
+                                      <TableBody>
+                                        {aiSteps.step4.dataTypeConversions.map((conv: any, idx: number) => (
+                                          <TableRow key={idx}>
+                                            <TableCell>{conv.column}</TableCell>
+                                            <TableCell>{conv.from}</TableCell>
+                                            <TableCell>{conv.to}</TableCell>
+                                            <TableCell>{conv.reason}</TableCell>
+                                          </TableRow>
+                                        ))}
+                                      </TableBody>
+                                    </Table>
+                                  </TableContainer>
+                                </Box>
+                              )}
+                              {aiSteps.step4.qualityIssues && aiSteps.step4.qualityIssues.length > 0 && (
+                                <Box>
+                                  <Typography variant="subtitle2" gutterBottom>⚠️ Problemy jakościowe</Typography>
+                                  <Stack spacing={0.5}>
+                                    {aiSteps.step4.qualityIssues.map((issue: string, idx: number) => (
+                                      <Typography key={idx} variant="body2">• {issue}</Typography>
+                                    ))}
+                                  </Stack>
+                                </Box>
+                              )}
+                              {aiSteps.step4.targetSpecificSuggestions && aiSteps.step4.targetSpecificSuggestions.length > 0 && (
+                                <Box>
+                                  <Typography variant="subtitle2" gutterBottom>🎯 Sugestie specyficzne dla kolumny docelowej</Typography>
+                                  <Stack spacing={0.5}>
+                                    {aiSteps.step4.targetSpecificSuggestions.map((suggestion: string, idx: number) => (
+                                      <Typography key={idx} variant="body2">• {suggestion}</Typography>
+                                    ))}
+                                  </Stack>
+                                </Box>
+                              )}
+                            </Stack>
+                          </AccordionDetails>
+                        </Accordion>
+
+                        <Button variant="outlined" onClick={handleResetAnalysis} sx={{ mt: 2 }}>
+                          🔄 Uruchom nową analizę
+                        </Button>
+                      </Stack>
                     </Box>
                   )}
                 </Paper>
               )}
 
-              {out.source !== 'llm_guess' && openaiApiKey && (
+              {out.source !== 'llm_guess' && (openaiApiKey || openaiApiKeySource === 'env') && (
                 <Alert severity="info">
                   Dodatkowe analizy AI są dostępne tylko gdy źródłem decyzji jest 'Propozycja AI'
                 </Alert>
               )}
 
-              {!openaiApiKey && (
+              {!openaiApiKey && openaiApiKeySource !== 'env' && (
                 <Alert severity="warning">
                   Brak klucza API OpenAI - dodatkowe analizy AI wymagają klucza API
                 </Alert>
